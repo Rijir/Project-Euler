@@ -27,3 +27,7 @@ def isTruncatable(p):
 
     return True
 
+primes = [p for p in primes_sieve2(1000000)]
+truncatable = [t for t in filter(isTruncatable, primes)]
+assert(len(truncatable) == 11)
+print("Sum of all 11 truncatable primes is %d" % sum(truncatable))
