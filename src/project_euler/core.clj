@@ -1,11 +1,15 @@
 (ns project-euler.core
-  (:use clojure.math clojure.set)
-  (:require clojure.string
-            [clojure.core.matrix :as matrix]
-            [clojure.core.matrix.linear :as linear]
-            [clojure.java.io :as io]
-            [clojure.math.combinatorics :as combinatorics]
-            [clojure.string :as str]))
+  (:require
+   [clojure.core.matrix :as matrix]
+   [clojure.core.matrix.linear :as linear]
+   [clojure.java.io :as io]
+   [clojure.math :as math
+    :refer [sqrt pow ceil floor round exp log PI sin cos atan]]
+   [clojure.math.combinatorics :as combinatorics]
+   [clojure.pprint :refer [pprint]]
+   [clojure.set :as set]
+   [clojure.string :as str]
+   ))
 
 (defn problem0
   []
@@ -40,7 +44,7 @@
   ([n]
    (primes-under n (range 2 n)))
   ([n c]
-   (if (not (empty? c))
+   (when (not (empty? c))
      (let [p (first c)]
        (lazy-seq
         (cons p
@@ -70,7 +74,7 @@
   ([ps c end]
    (if-let [p (first c)]
      (recur (conj ps p)
-            (difference c (range p end p))
+            (set/difference c (set (range p end p)))
             end)
      ps)))
 
@@ -86,7 +90,7 @@
 
 (defn palindrome-number?
   [n]
-  (let [dig-count (inc (floor (log10 n)))]
+  (let [dig-count (inc (floor (math/log10 n)))]
     (every?  #(= (mod (floor (/ n (pow 10 %))) 10)
                  (mod (floor (/ n (pow 10 (- dig-count % 1)))) 10))
              (range (/ dig-count 2)))))
@@ -213,7 +217,7 @@
    Else returns nil"
   [a b]
   (let [c (sqrt (+ (* a a) (* b b)))]
-    (if (= (mod c 1) 0.0)
+    (when (= (mod c 1) 0.0)
       (int c))))
 
 (defn problem9
@@ -606,9 +610,9 @@
       ;; (pprint [thousands hundreds tens ones])
       (str (nth thousands-words thousands)
            (nth hundreds-words hundreds)
-           (if (and (or (> thousands 0) (> hundreds 0))
+           (when (and (or (> thousands 0) (> hundreds 0))
                     (not= 0 tens ones))
-             (str "and"))
+             "and")
            (if (= tens 1)
              (nth teens-words ones)
              (str (nth tens-words tens)
@@ -749,29 +753,28 @@
                        (inc latest-year)
                        latest-year)
                      " was a Sunday"))
-            (do
-            (if (>= next-sunday next-month-start)
-              ;; the next sunday is in the next month, but not the 1st
-              (recur (if (>= next-month (count month-lengths))
-                       next-year-start
-                       latest-year-start)
-                     (if (>= next-month (count month-lengths))
-                       (inc latest-year)
-                       latest-year)
-                     next-month-start
-                     (mod next-month (count month-lengths))
-                     next-sunday
-                     (if (and (> latest-year 1900)(= next-sunday next-month-start))
-                       ;; the next sunday is the 1st of the month
-                       (inc sunday-the-first-count)
-                       sunday-the-first-count))
-              ;; the next sunday is still in the current month
-              (recur latest-year-start
-                     latest-year
-                     latest-month-start
-                     latest-month
-                     next-sunday
-                     sunday-the-first-count))))))))
+          (if (>= next-sunday next-month-start)
+            ;; the next sunday is in the next month, but not the 1st
+            (recur (if (>= next-month (count month-lengths))
+                     next-year-start
+                     latest-year-start)
+                   (if (>= next-month (count month-lengths))
+                     (inc latest-year)
+                     latest-year)
+                   next-month-start
+                   (mod next-month (count month-lengths))
+                   next-sunday
+                   (if (and (> latest-year 1900)(= next-sunday next-month-start))
+                     ;; the next sunday is the 1st of the month
+                     (inc sunday-the-first-count)
+                     sunday-the-first-count))
+            ;; the next sunday is still in the current month
+            (recur latest-year-start
+                   latest-year
+                   latest-month-start
+                   latest-month
+                   next-sunday
+                   sunday-the-first-count)))))))
 
 (defn problem20
   "n! means n x (n - 1) x ... x 3 x 2 x 1.
@@ -866,8 +869,8 @@
     Find the sum of all the positive integers which cannot be written as the sum of two abundant numbers."
   []
   (let [candidates (range 1 28123)
-        abundants (filter abundant? candidates)
-        abundant-sums (filter abundant-sum? candidates)
+        ;; abundants (filter abundant? candidates)
+        ;; abundant-sums (filter abundant-sum? candidates)
         non-abundant (filter #(not (abundant-sum? %)) candidates)]
     (reduce + non-abundant)))
 
@@ -898,7 +901,7 @@
 (defn num-digits
   [n]
   (if (int? n)
-    (inc (int (log10 n)))
+    (inc (int (math/log10 n)))
     (count (str n))))
 
 (defn problem25
@@ -925,7 +928,7 @@
     What is the index of the first term in the Fibonacci sequence to contain 1000 digits?"
   []
   (let [fib-indexed (map (fn [i n] [i n]) (iterate inc 1) (fib))]
-    (first (first (filter (fn [[i n]] (>= (num-digits n) 1000))
+    (first (first (filter (fn [[_i n]] (>= (num-digits n) 1000))
                           fib-indexed)))))
 
 (defn remainder-seq
@@ -1177,7 +1180,7 @@
                                  a-digit-set (set a-digits)
                                  b-digit-set (set b-digits)]
                              (and (= (count pandigital-set) (+ (count a-digits) (count b-digits) (count p-digits)))
-                                  (= (union a-digit-set b-digit-set p-digit-set) pandigital-set))))
+                                  (= (set/union a-digit-set b-digit-set p-digit-set) pandigital-set))))
                          ds)))))
          (reduce +))))
 
@@ -1204,10 +1207,10 @@
                      (and (< n d)
                           (= 2 (count n-digits))
                           (= 2 (count d-digits))
-                          (= 1 (count (intersection n-digits d-digits)))
+                          (= 1 (count (set/intersection n-digits d-digits)))
                           (= (/ n d)
-                             (/ (first (difference n-digits d-digits))
-                                (first (difference d-digits n-digits))))))))
+                             (/ (first (set/difference n-digits d-digits))
+                                (first (set/difference d-digits n-digits))))))))
          (map (fn [[n d]] (/ n d)))
          (reduce *))))
 
@@ -1488,7 +1491,7 @@
                        [j k pj pk s d]))
                    pairs)))
        (map (fn [pairs]
-                 (filter (fn [[j k pj pk s d]]
+                 (filter (fn [[_j _k _pj _pk s d]]
                            (and (pentagonal-number? s)
                                 (pentagonal-number? d)))
                          pairs)))
@@ -1546,7 +1549,7 @@
                                                  2))
                                         1))
                                 )))]))
-         (filter (fn [[n ps]] (empty? ps))) ;; find the odd composite where no primes work
+         (filter (fn [[_n ps]] (empty? ps))) ;; find the odd composite where no primes work
          (first)
          )))
 
@@ -1565,7 +1568,7 @@
                      (recur (inc e)
                             (/ r p))
                      e))]))
-         (filter (fn [[p e]] (not (= e 0)))) ;; remove 0 exponents
+         (filter (fn [[_p e]] (not (= e 0)))) ;; remove 0 exponents
          (#(if (empty? %)
              (list [n 1]) ;; n is prime
              %))
@@ -1782,7 +1785,7 @@
 (defn prime-factorization
   "Returns the unique prime factorization of n in the form [[2 a] [3 b] ...] where a, b, etc. are not 0"
   [n]
-  (let [limit (ceil (sqrt n))]
+  (let [_limit (ceil (sqrt n))]
     ;; (when (< (:limit @prime-cache) limit)
     ;;   (reset! prime-cache {:limit (* 2 limit) :primes (sieve-of-eratosthenes (* 2 limit))})
     ;;   (reset! factor-cache
@@ -1837,14 +1840,14 @@
    ;;         (map from-factorization consecutive-facts) ;; We got it!
    ;;         (recur (rest fs)) ;; try the next n consecutive factorizations
    ;;         ))))
-   (let [limit (pow 2 18)
-         factor-counts-t (transient (vec (repeat limit 0)))]
-     (for [i (range 2 limit)]
-       (when (= (nth factor-counts-t i) 0) ;; i is prime (hasn't had a factor yet)
-         (for [n (range i limit i)] ;; for each multiple of i below limit
-           (assoc! factor-counts-t n (inc (nth factor-counts-t n))) ;; increment factor count
-           )))
-     (let [factor-counts (persistent! (reduce (fn [factor-counts i]
+   (let [limit (int (pow 2 18))
+         ;; factor-counts-t (transient (vec (repeat limit 0)))
+         ;; factor-counts-t (for [i (range 2 limit)]
+         ;;                   (when (= (nth factor-counts-t i) 0) ;; i is prime (hasn't had a factor yet)
+         ;;                     (for [n (range i limit i)] ;; for each multiple of i below limit
+         ;;                       (assoc! factor-counts-t n (inc (nth factor-counts-t n))) ;; increment factor count
+         ;;                       )))
+         factor-counts (persistent! (reduce (fn [factor-counts i]
                                                 (if (= (nth factor-counts i) 0) ;; i is prime (hasn't had a factor yet)
                                                   (reduce (fn [factor-counts n]
                                                             (assoc! factor-counts n (inc (nth factor-counts n)))) ;; increment factor count
@@ -1855,11 +1858,11 @@
                                                   ))
                                               (transient (vec (repeat limit 0)))
                                               (range 2 limit)))]
-        (loop [i 2]
-          (if (every? #(= % n)
-                      (subvec factor-counts i (+ i n)))
-            i
-            (recur (inc i)))))
+     (loop [i 2]
+       (if (every? #(= % n)
+                   (subvec factor-counts i (+ i n)))
+         i
+         (recur (inc i))))
      )
    ))
 
@@ -1897,7 +1900,7 @@
     (for [p1 candidates
           p2 candidates
           :let [p3 (+ p2 (- p2 p1))
-                digit-set (set (digits p1))]
+                _digit-set (set (digits p1))]
           :when (and (< p1 p2 p3)
                      (candidates p3) ;; p3 is also a 4-digit prime
                      (apply = (map #(set (digits %)) [p1 p2 p3])))]
@@ -1987,7 +1990,7 @@
                                                                                      (count ds)))))))
                                                         (filter #(>= (count %) n)))]
                       [p prime-digit-replacements])))
-          (filter (fn [[p ps]]
+          (filter (fn [[_p ps]]
                     (not (empty? ps))))
           (first)))))
 
@@ -2003,7 +2006,7 @@
                    (->> (range 2 7)
                     (map (fn [m] (* m n)))
                     (filter #(let [p-ds (digits %)]
-                               (and (empty? (difference d-set (set p-ds)))
+                               (and (empty? (set/difference d-set (set p-ds)))
                                     (= (count p-ds) (count ds)))))
                     (#(= 5 (count %)))))))
        (first)))
@@ -2351,14 +2354,14 @@
   []
   (let [cipher-text (slurp (io/resource "0059_cipher.txt"))
         cipher-chars (map Integer/parseInt (clojure.string/split cipher-text #","))
-        cipher-len (count cipher-chars)
-        ascii-freq (->> (io/resource "ascii_freq.txt")
-                        (slurp)
-                        (clojure.string/split-lines)
-                        (map (fn [line]
-                               (let [[char-num freq] (clojure.string/split line #":")]
-                                 [(Integer/parseInt char-num) (Float/parseFloat freq)])))
-                        (into {}))
+        _cipher-len (count cipher-chars)
+        _ascii-freq (->> (io/resource "ascii_freq.txt")
+                         (slurp)
+                         (clojure.string/split-lines)
+                         (map (fn [line]
+                                (let [[char-num freq] (clojure.string/split line #":")]
+                                  [(Integer/parseInt char-num) (Float/parseFloat freq)])))
+                         (into {}))
         key-char-candidates (range (int \a) (inc (int \z)))
         plain-texts (for [k1 key-char-candidates
                           k2 key-char-candidates
@@ -2395,23 +2398,23 @@
                                                     (prime? (from-digits (concat (digits a) (digits b))))
                                                     (prime? (from-digits (concat (digits b) (digits a))))))
                                              prime-candidates))]))
-                    (filter (fn [[p ps]] (>= (count ps) 5)))
+                    (filter (fn [[_p ps]] (>= (count ps) 5)))
                     (into (sorted-map)))]
      (set (for [[p1 p1-pairs] pairs
                 p2 p1-pairs
                 :when (not= p1 p2)
-                :let [p1-p2-pairs (intersection p1-pairs (pairs p2))]
+                :let [p1-p2-pairs (set/intersection p1-pairs (pairs p2))]
                 :when (>= (count p1-p2-pairs) 5)
                 p3 p1-p2-pairs
                 :when (and (not= p1 p3)
                            (not= p2 p3))
-                :let [p1-p2-p3-pairs (intersection p1-p2-pairs (pairs p3))]
+                :let [p1-p2-p3-pairs (set/intersection p1-p2-pairs (pairs p3))]
                 :when (>= (count p1-p2-p3-pairs) 5)
                 p4 p1-p2-p3-pairs
                 :when (and (not= p1 p4)
                            (not= p2 p4)
                            (not= p3 p4))
-                :let [intersection-set (intersection p1-p2-p3-pairs (pairs p4))]
+                :let [intersection-set (set/intersection p1-p2-p3-pairs (pairs p4))]
                 :when (>= (count intersection-set) 5)
                 ]
             {:set intersection-set
@@ -2663,8 +2666,8 @@
   ;; b_0 = a_0
   ;; c_0 = 1
   (let [a_0 (int (sqrt n))
-        b_0 a_0
-        c_0 1]
+        _b_0 a_0
+        _c_0 1]
     (if (= (* a_0 a_0) n)
       {:fixed [a_0]
        :cycle []}
@@ -2698,7 +2701,7 @@
    (->> (range (inc n))
         (map (fn [n] [n (sqrt-continued-fraction n)]))
         (map (fn [[n c]] [n (assoc c :period (count (:cycle c)))]))
-        (filter (fn [[n {:keys [cycle]}]]
+        (filter (fn [[_n {:keys [cycle]}]]
                   (not= (mod (count cycle)
                              2)
                         0)))
@@ -3164,7 +3167,7 @@
   Given that L is the length of the wire, for how many values of L<=1,500,000 can exactly one integer sided right angle triangle be formed?
   "
   []
-  (reduce + (map (fn [[L triples]] (if (= (count triples) 1) 1 0))
+  (reduce + (map (fn [[_L triples]] (if (= (count triples) 1) 1 0))
                  (L-to-pythagorean-triples-under 1500000))))
 
 (defn sigma-1
@@ -3653,6 +3656,7 @@
                 [{:to n :double is-double} total-prob])
         :rel [{:to (+ square n) :double is-double} total-prob]
         (assert false (str "Unknown action: " action))))))
+
 (defn monopoly-edges
   [roll-dist]
   (let [max-roll (apply max (keys roll-dist))]
@@ -3897,10 +3901,12 @@
       (cond (> solution-count 1000000) c
             (< a b) (recur solution-count (inc a) b c)
             (< b c) (recur solution-count 1 (inc b) c)
-            :else (do
-                    ;; (when (or (= c 99) (= c 100))
-                    ;;   (pprint {:M c :solutions solution-count}))
-                    (recur solution-count 1 1 (inc c)))))))
+            :else
+            #_{:clj-kondo/ignore [:redundant-do]}
+            (do
+              ;; (when (or (= c 99) (= c 100))
+              ;;   (pprint {:M c :solutions solution-count}))
+              (recur solution-count 1 1 (inc c)))))))
 
 (defn problem87
   "
@@ -3943,7 +3949,7 @@
 (defn natural-number-sets
   "Infinite! seq of seqs of length n descending natural numbers."
   ([n] (natural-number-sets n 1 :top))
-  ([n lim top] (lazy-cat (map #(cons lim %) (natural-number-sets (dec n) lim))
+  ([n lim _top] (lazy-cat (map #(cons lim %) (natural-number-sets (dec n) lim))
                          (natural-number-sets n (inc lim) :top)))
   ([n lim] (if (<= n 0)
              '(())
@@ -4258,7 +4264,7 @@
   ;;
   ([] (problem91 50))
   ([limit]
-   (let [epsilon 0.1]
+   (let [_epsilon 0.1]
      (+
       ;; (* 3 limit limit) ;; Non-hypotnuse-on-axis
       ;; (* 2 (quot limit 2)) ;; h-on-axis (even h_s other than 0, once for each axis)
@@ -4267,6 +4273,7 @@
               (map (fn [[x y]]
                      (if (= x y 0)
                        0 ;; skip O
+                       #_{:clj-kondo/ignore [:redundant-do]}
                        (do
                          ;; (pprint [x y])
                          (let [θ (if (= x 0)

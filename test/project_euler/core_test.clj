@@ -1,7 +1,6 @@
 (ns project-euler.core-test
-  (:require [clojure.test :refer :all]
-            [project-euler.core :refer :all]))
+  (:require [clojure.test :refer [deftest is]]
+            [project-euler.core :as core]))
 
-(deftest a-test
-  (testing "FIXME, I fail."
-    (is (= 0 1))))
+(deftest problem1-test
+  (is (= (core/problem1) 233168)))
