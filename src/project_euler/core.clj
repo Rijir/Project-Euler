@@ -1,8 +1,11 @@
 (ns project-euler.core
   (:use clojure.math clojure.set)
   (:require clojure.string
+            [clojure.core.matrix :as matrix]
+            [clojure.core.matrix.linear :as linear]
             [clojure.java.io :as io]
-            [clojure.math.combinatorics :as combinatorics]))
+            [clojure.math.combinatorics :as combinatorics]
+            [clojure.string :as str]))
 
 (defn problem0
   []
@@ -45,10 +48,25 @@
                             (doall (filter #(not (= (mod % p) 0))
                                            (rest c))))))))))
 
+(def prime-cache (atom {:limit 0
+                        :primes []}))
+
+(def factor-cache (atom {}))
+
+(defn reset-prime-cache [n primes]
+  (reset! prime-cache {:limit n :primes primes})
+  (reset! factor-cache
+          (reduce #(assoc %1 %2 [[%2 1]]) @factor-cache primes))
+  )
+
 (defn sieve-of-eratosthenes
   "Sieve of eratosthenes, see http://www.learningclojure.com/2009/11/sieve-of-eratosthenes.html"
   ([n]
-   (sieve-of-eratosthenes (sorted-set) (apply sorted-set (range 2 (inc n))) (inc n)))
+   (if (< n (:limit @prime-cache))
+     (take-while #(< % n) (:primes @prime-cache))
+     (let [primes (sieve-of-eratosthenes (sorted-set) (apply sorted-set (range 2 (inc n))) (inc n))]
+       (reset-prime-cache n primes)
+       primes)))
   ([ps c end]
    (if-let [p (first c)]
      (recur (conj ps p)
@@ -770,8 +788,8 @@
 (defn divisors-sum
   [n]
   (let [divs (divisors n)
-                  proper-divs (filter #(not= % n) divs)]
-              (reduce + proper-divs)))
+        proper-divs (filter #(not= % n) divs)]
+    (reduce + proper-divs)))
 
 (defn problem21
   "Let d(n) be defined as the sum of proper divisors of n (numbers less than n which divide evenly into n).
@@ -959,8 +977,6 @@
                  max-len))))))
 
 
-(def prime-cache (atom {:limit 10000
-                        :primes (sieve-of-eratosthenes 10000)}))
 (defn prime?
   [n]
   (if (< n 0)
@@ -968,9 +984,9 @@
     (if (< n (:limit @prime-cache))
       ((:primes @prime-cache) n)
       (let [limit (inc (int (sqrt n)))]
-        (when (< (:limit @prime-cache) limit)
-          (reset! prime-cache {:limit limit :primes (sieve-of-eratosthenes limit)}))
-        (loop [c (:primes @prime-cache)]
+        ;; (when (< (:limit @prime-cache) limit)
+        ;;   (reset! prime-cache {:limit limit :primes (sieve-of-eratosthenes limit)}))
+        (loop [c (sieve-of-eratosthenes limit)]
           (if-let [i (first c)]
             (if (>= i n)
               true ;; we passed p without finding a divisor
@@ -1534,13 +1550,13 @@
          (first)
          )))
 
-(defn prime-factorization
+(defn trial-division-factorization
   "Returns the unique prime factorization of n in the form [[2 a] [3 b] ...] where a, b, etc. are not 0"
   [n]
   (let [limit (inc (/ n 2))]
-    (when (< (:limit @prime-cache) limit)
-      (reset! prime-cache {:limit (* 2 limit) :primes (sieve-of-eratosthenes (* 2 limit))}))
-    (->> (take-while #(< % limit) (:primes @prime-cache)) ;; foreach prime less than limit
+    ;; (when (< (:limit @prime-cache) limit)
+      ;; (reset! prime-cache {:limit (* 2 limit) :primes (sieve-of-eratosthenes (* 2 limit))}))
+    (->> (take-while #(< % limit) (sieve-of-eratosthenes (* 2 limit))) ;; foreach prime less than limit (sieve 2x as much for perf)
          (map (fn [p] ;; how many times does p evenly divide n?
                 [p
                  (loop [e 0
@@ -1554,6 +1570,240 @@
              (list [n 1]) ;; n is prime
              %))
      )))
+
+(defn gcd
+  "https://en.wikipedia.org/wiki/Greatest_common_divisor#Euclid's_algorithm"
+  [a b]
+  (if (= b 0)
+    a
+    (recur b (mod a b))))
+
+(defn B-smooth?
+  ([n P] (B-smooth? n P (vec (repeat (count P) 0)) 0))
+  ([n P B i]
+   (if (> n 0)
+     (if (= n 1)
+       B
+       (if (< i (count P))
+         (let [p (nth P i)]
+           (if (= (mod n p) 0)
+             (recur (/ n p) P (update B i inc) i)
+             (recur n P B (inc i))))
+         false))
+     false)))
+
+(defn linearly-independent?
+  "Returns true iff there is no solution vector `b` s.t. `Axb=v`"
+  [A v]
+  (if (empty? A)
+    true
+    (let [new-basis (matrix/matrix :vectorz (conj A v))]
+      (= (linear/rank new-basis)
+         (matrix/row-count new-basis)))))
+
+(defn legendre
+  "The Legendre symbol (a/p) determines quadratic residues mod p"
+  [a p]
+  (if (= (mod a p) 0)
+    0
+    (let [l (mod (pow a (quot (- p 1)
+                              2))
+                 p)]
+      (if (> l 1)
+        -1
+        1))))
+
+(defn quadratic-sieve-factorization
+  "See https://math.mit.edu/~goemans/18310S15/factoring-notes.pdf
+  https://sourceforge.net/p/arielqs/code/HEAD/tree/src/sieve/Sieve.java
+  https://en.wikipedia.org/wiki/Quadratic_sieve"
+  [n]
+  (if (= (mod (sqrt n) 1.0) 0.0)
+    (int (sqrt n))
+    (letfn [(g [z] (mod (* z z) n))
+            (factors-from-rows [Z is]
+              (let [a_is (map #(first (nth Z %)) is)
+                    _ (pprint {:a_is a_is})
+                    b_is (map #(nth (nth Z %) 2) is)
+                    _ (pprint {:b_is b_is})
+                    a (mod (reduce * 1N a_is) n)
+                    b2 (reduce * 1N b_is)
+                    _ (pprint {:b2 b2})
+                    b (bigint (.sqrt (biginteger b2)))
+                    ;; _ (pprint (* b b))
+                    ;; _ (assert (= (* b b) b2) "b2 was not a perfect square")
+                    _ (pprint {:a a})
+                    _ (pprint {:b b})
+                    f1 (abs (gcd n (- a b)))
+                    f2 (abs (gcd n (+ a b)))
+                    ]
+                (pprint f1)
+                (pprint f2)
+                [f1 f2]))]
+      (let [B (int (ceil (pow (exp (sqrt (* (log n) (log (log n)))))
+                              (/ (sqrt 2)
+                                 4))))
+            _ (pprint B)
+            ;; B (max 100 B)
+            ;; _ (when (< (:limit @prime-cache) B)
+            ;;     (reset! prime-cache {:limit (* 2 B) :primes (sieve-of-eratosthenes (* 2 B))}))
+            ;; P (vec (take-while #(< % B) (sieve-of-eratosthenes (* 2 B)))) ;; sieve 2x as much for perf
+            P (vec (take B (filter #(not= -1 (legendre n %)) (sieve-of-eratosthenes 100))))
+            _ (pprint P)
+            t (count P)
+            _ (assert (= t B))
+            P-factor (first (filter #(= (mod n %) 0) P))]
+        (if P-factor
+          P-factor
+          (loop [L (range (int (ceil (sqrt n))) n)
+                 Z '() ;; prime factorings of B-smooth numbers z of the form [z product(j=1 to t, p_j ^ alpha_{i,j})]
+                 ]
+            (if (not (or (empty? L)
+                         (> (count Z) B)))
+              (let [z (first L)
+                    gz (g z)
+                    a (B-smooth? gz P)
+                    all-even (every? #(= (mod % 2) 0) (or a [0]))]
+                (recur (rest L)
+                       (if (and a (not all-even))
+                         (conj Z [z (mapv #(mod % 2) a) gz])
+                         Z)))
+              ;; looking for linearly dependent rows in A, where A_{ij} = alpha_{i,j} mod 2
+              (let [Z (sort-by #(reduce + (second %)) Z)
+                    A (mapv #(mapv (fn [a] (mod a 2))
+                                   (second %))
+                            Z)]
+                (loop [i 0
+                       basis []
+                       basis-indices []
+                       dependent-indices []
+                       zero-indices []]
+                  (if (< i (count A))
+                    (if (apply = 0 (nth A i))
+                      (recur (inc i) basis basis-indices dependent-indices (conj zero-indices i))
+                      (if (linearly-independent? basis (nth A i))
+                        (recur (inc i)
+                               (conj basis (nth A i))
+                               (conj basis-indices i)
+                               dependent-indices
+                               zero-indices)
+                        (recur (inc i)
+                               basis
+                               basis-indices
+                               (conj dependent-indices i)
+                               zero-indices)))
+                    (do
+                      (pprint {:basis basis})
+                      (pprint {:basis-indices basis-indices})
+                      (pprint {:dependent-indices dependent-indices})
+                      (pprint {:Z Z})
+                      (pprint {:A A})
+                      (loop [dependent-indices dependent-indices
+                             solution-to-equal-rows {}]
+                        (if (empty? dependent-indices)
+                          ;; Zero rows have been eliminated
+                          ;; (let [a (mod (reduce *
+                          ;;                      1N
+                          ;;                      (map (fn [i] (first (nth Z i)))
+                          ;;                           zero-indices))
+                          ;;              n)
+                          ;;       b2 (reduce *
+                          ;;                  1N
+                          ;;                  (map (fn [i] (nth (nth Z i) 2))
+                          ;;                       zero-indices))
+                          ;;       b (bigint (.sqrt (biginteger b2)))
+                          ;;       f (abs (gcd n (- a b)))
+                          ;;       ;; _ (pprint {:zero-indices zero-indices})
+                          ;;       _ (pprint {:a a})
+                          ;;       _ (pprint {:b2 b2})
+                          ;;       _ (pprint {:b b})
+                          ;;       _ (pprint {:f f})
+                          ;;       ]
+                          ;;   (if (or (= f 1) (= f n))
+                          ;;     false ;; No non-trivial solutions. `n` must be prime?)
+                          ;;     f))
+                          false ;; No non-trivial solutions. `n` must be prime?)
+                          (let [combination-row (first dependent-indices)
+                                v (matrix/matrix :vectorz (nth A combination-row))
+                                _ (pprint {:v v})
+                                combination-vector-solution (linear/solve (matrix/matrix :vectorz (matrix/transpose basis)) v)
+                                solution (mapv #(round (abs %)) combination-vector-solution)
+                                _ (pprint {:solution solution})
+                                equal-rows (solution-to-equal-rows solution)
+                                _ (pprint {:equal-rows equal-rows})
+                                ;; ai_s (cons (first (nth Z combination-row))
+                                ;;            (map (fn [i] (first (nth Z i)))
+                                ;;                 (filter (fn [i] (not= 0 (nth solution i)))
+                                ;;                         (range (count solution)))))
+                                ;; _ (pprint {:ai_s ai_s})
+                                ;; a (mod (reduce * 1N ai_s) n)
+                                ;; bi_s (map g ai_s)
+                                ;; _ (pprint {:bi_s bi_s})
+                                ;; b2 (reduce * 1N bi_s)
+                                ;; _ (pprint {:b2 b2})
+                                ;; b (bigint (.sqrt (biginteger b2)))
+                                ;; ;; _ (pprint (* b b))
+                                ;; ;; _ (assert (= (* b b) b2) "b2 was not a perfect square")
+                                ;; _ (pprint {:a a})
+                                ;; _ (pprint {:b b})
+                                ;; f1 (abs (gcd n (- a b)))
+                                ;; f2 (abs (gcd n (+ a b)))
+                                rows (conj (map #(nth basis-indices %)
+                                                (filter (fn [i] (not= 0 (nth solution i)))
+                                                        (range (count solution))))
+                                           combination-row)
+                                f (loop [rows rows
+                                         equal-rows equal-rows]
+                                    ;; TODO: track dependent rows equal to basis rows and try swapping them in
+                                    (let [[f1 f2] (factors-from-rows Z rows)]
+                                      (if (or (= f1 1)
+                                              (= f1 n))
+                                        (if (or (= f2 1)
+                                                (= f2 n))
+                                          (when (not (empty? equal-rows))
+                                            (recur [combination-row (first equal-rows)]
+                                                   (rest equal-rows)))
+                                          f2)
+                                        f1)))
+                                ]
+                            (if f
+                              (if (< f Integer/MAX_VALUE) (int f) f)
+                              (recur (rest dependent-indices)
+                                     (update solution-to-equal-rows solution #(conj (or % []) combination-row))))))))))))))))))
+
+(defn combine-factorizations [a b]
+  (let [a-map (reduce (fn [m [p e]] (assoc m p e))
+                      {}
+                      a)]
+    (vec (reduce (fn [m [p e]] (update m p (fn [old] (+ (or old 0) e))))
+                 a-map
+                 b))))
+
+(defn prime-factorization
+  "Returns the unique prime factorization of n in the form [[2 a] [3 b] ...] where a, b, etc. are not 0"
+  [n]
+  (let [limit (ceil (sqrt n))]
+    ;; (when (< (:limit @prime-cache) limit)
+    ;;   (reset! prime-cache {:limit (* 2 limit) :primes (sieve-of-eratosthenes (* 2 limit))})
+    ;;   (reset! factor-cache
+    ;;           (reduce #(assoc %1 %2 [[%2 1]]) @factor-cache (:primes @prime-cache)))
+    ;;           )
+    (if-let [f (get @factor-cache n)]
+      f
+      (let [
+            ;; f (quadratic-sieve-factorization n)
+            f (trial-division-factorization n)
+            ;; f (if f
+            ;;     (if (vector? f)
+            ;;       f ;; n is B-smooth
+            ;;       (combine-factorizations (prime-factorization f)
+            ;;                               (prime-factorization (/ n f))))
+            ;;     [[n 1]] ;; n is prime
+            ;;     )
+            ]
+        (reset! factor-cache (assoc @factor-cache n f))
+        f))
+    ))
 
 (defn from-factorization
   [f]
@@ -2557,3 +2807,1509 @@
   []
   (let [input (slurp (io/resource "0067_triangle.txt"))]
     (max-triangle-path input)))
+
+(defn problem68
+  "
+  Consider the following \"magic\" 3-gon ring, filled with the numbers 1 to 6, and each line adding to nine.
+
+             4
+              \\
+               3
+              / \\
+             1 - 2 - 6
+            /
+           5
+
+  Working clockwise, and starting from the group of three with the numerically lowest external node (4,3,2 in this example), each solution can be described uniquely.
+  For example, the above solution can be described by the set: 4,3,2; 6,2,1; 5,1,3.
+
+  It is possible to complete the ring with four different totals: 9, 10, 11, and 12. There are eight solutions in total.
+  Total	Solution Set
+  9    	4,2,3; 5,3,1; 6,1,2
+  9    	4,3,2; 6,2,1; 5,1,3
+  10   	2,3,5; 4,5,1; 6,1,3
+  10   	2,5,3; 6,3,1; 4,1,5
+  11   	1,4,6; 3,6,2; 5,2,4
+  11   	1,6,4; 5,4,2; 3,2,6
+  12   	1,5,6; 2,6,4; 3,4,5
+  12   	1,6,5; 3,5,4; 2,4,6
+
+  By concatenating each group it is possible to form 9-digit strings; the maximum string for a 3-gon ring is 432621513.
+
+  Using the numbers 1 to 10, and depending on arrangements, it is possible to form 16- and 17-digit strings. What is the maximum 16-digit string for a \"magic\" 5-gon ring?
+  "
+  []
+  (let [numbers (set (range 1 11))]
+    (-> (for [e1 numbers ;; lowest external
+              :let [numbers (disj numbers e1)]
+              i1 (disj numbers 10) ;; internal 1. If the digit string is 16 digits long, 10 cannot be internal
+              :let [numbers (disj numbers i1)]
+              i2 (disj numbers 10) ;; internal 2
+              :let [numbers (disj numbers i2)
+                    sum (+ e1 i1 i2)]
+              e2 (filter #(> % e1) numbers) ;; other externals must be greater than e1
+              :let [numbers (disj numbers e2)]
+              i3 (disj numbers 10)
+              :let [numbers (disj numbers i3)]
+              :when (= (+ e2 i2 i3) sum)
+              e3 (filter #(> % e1) numbers)
+              :let [numbers (disj numbers e3)]
+              i4 (disj numbers 10)
+              :let [numbers (disj numbers i4)]
+              :when (= (+ e3 i3 i4) sum)
+              e4 (filter #(> % e1) numbers)
+              :let [numbers (disj numbers e4)]
+              i5 (disj numbers 10)
+              :let [numbers (disj numbers i5)]
+              :when (= (+ e4 i4 i5) sum)
+              e5 (filter #(> % e1) numbers)
+              :when (= (+ e5 i5 i1) sum)
+              ]
+          (str e1 i1 i2 e2 i2 i3 e3 i3 i4 e4 i4 i5 e5 i5 i1))
+        (sort)
+        (last))))
+
+(defn totient
+  ([n]
+   (if (= n 1)
+     1
+     (let [factorization (prime-factorization n)
+           prime-factors (map first factorization)]
+       ;; (reduce *
+       ;;         (map (fn [[p k]]
+       ;;                (* (pow p (dec k))
+       ;;                   (dec p)))
+       ;;              factorization))
+       (totient n prime-factors)
+       )))
+  ([n prime-factors]
+   (* n (reduce * (map #(- 1 (/ 1 %)) prime-factors)))))
+
+(defn n-over-totient
+  "𝜙⁡(𝑛) = n * prod(1 - 1/p) where the product is over the distinct prime numbers dividing n
+   n / 𝜙⁡(𝑛) = n / (n * prod(1 - 1/p))
+            = 1 / prod(1 - 1/p)"
+  [n]
+  (if (= n 1)
+    1
+    (let [prime-factors (map first (prime-factorization n))]
+      (/ 1 (reduce * (map #(- 1 (/ 1 %)) prime-factors))))))
+
+(defn problem69
+  "
+  Euler's totient function, 𝜙⁡(𝑛) [sometimes called the phi function],
+  is defined as the number of positive integers not exceeding 𝑛 which are relatively prime to 𝑛.
+  For example, as 1, 2, 4, 5, 7, and 8, are all less than or equal to nine and relatively prime to nine, 𝜙⁡(9) =6.
+
+  𝑛  | Relatively Prime | 𝜙⁡(𝑛) | 𝑛/𝜙⁡(𝑛)
+  2  | 1                | 1    | 2
+  3  | 1,2              | 2    | 1.5
+  4  | 1,3              | 2    | 2
+  5  | 1,2,3,4          | 4    | 1.25
+  6  | 1,5              | 2    | 3
+  7  | 1,2,3,4,5,6      | 6    | 1.1666...
+  8  | 1,3,5,7          | 4    | 2
+  9  | 1,2,4,5,7,8      | 6    | 1.5
+  10 | 1,3,7,9          | 4    | 2.5
+
+  It can be seen that 𝑛 =6 produces a maximum 𝑛/𝜙⁡(𝑛) for 𝑛 ≤10.
+
+  Find the value of 𝑛 ≤1 000 000 for which 𝑛/𝜙⁡(𝑛) is a maximum.
+  "
+  []
+  ;; n-over-totient is maximized when prod(1-1/p) is minimized, which happens when there are lots of low p_s
+  ;; so the maximizing n should be the largest highly composit number below 1 000 000?
+  ;; n = (* 2 3 5 7 11 13 17) = 510510
+  (loop [n 1
+         primes (sieve-of-eratosthenes 100)]
+    (if (< (* n (first primes)) 1000000)
+      (recur (* n (first primes)) (rest primes))
+      n))
+  ;; Inefficient: check all n-over-totients
+  ;; (->> (range 2 1000000)
+  ;;      (map #(vector % (n-over-totient %)))
+  ;;      (sort-by second)
+  ;;      (last))
+  )
+
+(defn problem70
+  "
+  Euler's totient function, 𝜙⁡(𝑛) [sometimes called the phi function],
+  is used to determine the number of positive numbers less than or equal to 𝑛 which are relatively prime to 𝑛.
+  For example, as 1,2,4,5,7, and 8, are all less than nine and relatively prime to nine, 𝜙⁡(9) =6.
+  The number 1 is considered to be relatively prime to every positive number, so 𝜙⁡(1) =1.
+
+  Interestingly, 𝜙⁡(87109) =79180, and it can be seen that 87109 is a permutation of 79180.
+
+  Find the value of 𝑛, 1 <𝑛 <10^7, for which 𝜙⁡(𝑛) is a permutation of 𝑛
+  and the ratio 𝑛/𝜙⁡(𝑛) produces a minimum.
+  "
+  ([] (problem70 7)) ;; 1 < n < 10^7
+  ([e]
+   ;; 𝑛/𝜙⁡(𝑛) is minimized by prime numbers (where 𝜙⁡(𝑛) = n-1)
+   ;; but n-1 will never be a digit permutation of n,
+   ;; so we're looking for minimally composit numbers.
+   (let [limit (pow 10 e)
+         ;; primes (drop-while #(< % (pow 10 (/ e 3)))
+         ;;                    (reverse (sieve-of-eratosthenes (sqrt (pow 10 e))))) ;; primes less than the sqrt of 10^e
+
+         primes (sieve-of-eratosthenes (* 6 (sqrt limit)))
+         high-primes (drop-while #(< % (sqrt limit)) primes)
+         low-primes (take-while #(< % (sqrt limit)) primes)
+         ]
+     (->> (for [p1 (reverse high-primes)
+                p2 (take-while #(and (< % (/ limit p1))
+                                 (< % p1))
+                               low-primes)
+                ;; _ (pprint {:p1 p1 :p2 p2})
+                :let [n (* p1 p2)
+                      t (totient n [p1 p2])]
+                :when (= (sort (digits n))
+                         (sort (digits t)))
+                ;; :let [_ (pprint {:p1 p1
+                ;;            :p2 p2
+                ;;            :n n
+                ;;            :n-over-t (/ n t)})]
+                ]
+            [n (/ n t)])
+          (sort-by second)
+          (first)))))
+
+(defn closestLesserFraction
+  "Find the fraction c/d where d<=n which is the next element in the sorted set of all proper reduced fractions before a/b"
+  [n a b]
+  (->> (for [d (range n 1 -1)
+             :let [c_lim (/ (* a d)
+                            b)
+                   c (int (floor c_lim))]
+             :when (not= c_lim c) ;; exclude n/d where it reduces to a/b
+             ]
+         [c (- (/ a b) (/ c d)) d])
+       (sort-by second)
+       (first)
+       ))
+
+(defn problem71
+  "
+  Consider the fraction, n/d, where n and d are positive integers. If n<d and HCF(n,d)=1 (aka gcd),
+  it is called a reduced proper fraction.
+
+  If we list the set of reduced proper fractions for d<=8 in ascending order of size, we get:
+  1/8, 1/7, 1/6, 1/5, 1/4, 2/7, 1/3, 3/8, 2/5, 3/7, 1/2, 4/7, 3/5, 5/8, 2/3, 5/7, 3/4, 4/5, 5/6, 6/7, 7/8
+
+  It can be seen that 2/5 is the fraction immediately to the left of 3/7.
+
+  By listing the set of reduced proper fractions for d<=1,000,000 in ascending order of size,
+  find the numerator of the fraction immediately to the left of 3/7."
+  []
+  (closestLesserFraction 1000000 3 7))
+
+(defn totient-sieve [limit]
+  (let [ts (vec (range limit))]
+    (reduce (fn [ts i]
+              (if (= (ts i) i) ;; i is prime
+                ;; mult (1-1/p) for all multiples of p
+                (reduce (fn [ts j]
+                          (assoc ts j (* (ts j)
+                                         (- 1 (/ 1 i)))))
+                        ts
+                        (range i limit i))
+                ;; ts[i] is already the totient of i
+                ts
+                ))
+            ts
+            (range 2 limit))))
+
+(defn problem72
+  "
+  Consider the fraction, n/d, where n and d are positive integers. If n<d and HCF(n,d)=1 (aka gcd),
+  it is called a reduced proper fraction.
+
+  If we list the set of reduced proper fractions for d<=8 in ascending order of size, we get:
+  1/8, 1/7, 1/6, 1/5, 1/4, 2/7, 1/3, 3/8, 2/5, 3/7, 1/2, 4/7, 3/5, 5/8, 2/3, 5/7, 3/4, 4/5, 5/6, 6/7, 7/8
+
+  It can be seen that there are 21 elements in this set.
+
+  How many elements would be contained in the set of reduced proper fractions for d<=1,000,000?
+  "
+  []
+  ;; Number of reduced proper fractions is the sum of the totients of 2<=d<=1,000,000
+  (reduce + (drop 2 ;; ignore 0 and 1
+                  (totient-sieve (inc 1000000)))))
+
+(defn fareySequence
+  "See https://en.wikipedia.org/wiki/Farey_sequence#Next_term"
+  ([n] (cons (/ 1 n)
+             (fareySequence n 0 1 1 n)))
+  ([n a b c d]
+   (let [p (int (- (* (floor (/ (+ n b)
+                                d))
+                      c)
+                   a))
+         q (int (- (* (floor (/ (+ n b)
+                                d))
+                      d)
+                   b))]
+     (if (= q 1)
+       '()
+       (cons (/ p q)
+             (lazy-seq (fareySequence n c d p q)))))))
+
+(defn problem73
+  "
+  For d<=8 it can be seen that there are 3 fractions between 1/3 and 1/2.
+  How many fractions lie between 1/3 and 1/2 in the sorted set of reduced proper fractions for d<=12,000
+  "
+  ([] (problem73 12000))
+  ([n]
+   (let [[a _ b] (closestLesserFraction n 1 3)
+         between (take-while #(< % (/ 1 2))
+                             (fareySequence n a b 1 3))]
+     (count between))))
+
+(defn digitFactorialChain
+  ([n] (digitFactorialChain n (hash-set n)))
+  ([n seen]
+   (let [next (reduce + (map factorial (digits n)))]
+     (cons n (if (seen next)
+               '()
+               (lazy-seq (digitFactorialChain next (conj seen next))))))))
+
+(defn problem74
+  "
+  The number 145 is well known for the property that the sum of the factorial of its digits is equal to 145:
+
+    1! + 4! + 5! = 1 + 24 + 120 = 145.
+
+  Perhaps less well known is 169, in that it produces the longest chain of numbers that link back to 169;
+  it turns out that there are only three such loops that exist:
+
+    169 to 363601 to 1454 to 169
+    871 to 45361 to 871
+    872 to 45362 to 872
+
+  It is not difficult to prove that EVERY starting number will eventually get stuck in a loop. For example,
+
+    69 to 363600 to 1454 to 169 to 363601 (to 1454)
+    78 to 45360 to 871 to 45361 (to 871)
+    540 to 145 (to 145)
+
+  Starting with 69 produces a chain of five non-repeating terms, but the longest non-repeating chain with a starting number below one million is sixty terms.
+
+  How many chains, with a starting number below one million, contain exactly sixty non-repeating terms?
+  "
+  []
+  (->> (range 1000000)
+       (map digitFactorialChain)
+       (map count)
+       (filter #(= % 60))
+       (count)))
+
+(let [A (matrix/matrix :vectorz [[1 -2 2]
+                                 [2 -1 2]
+                                 [2 -2 3]])
+      B (matrix/matrix :vectorz [[1 2 2]
+                                 [2 1 2]
+                                 [2 2 3]])
+      C (matrix/matrix :vectorz [[-1 2 2]
+                                 [-2 1 2]
+                                 [-2 2 3]])]
+  (defn pythagorean-triple-tree
+    "https://en.wikipedia.org/wiki/Tree_of_primitive_Pythagorean_triples"
+    ([] (pythagorean-triple-tree [3 4 5]))
+    ([parent]
+     (letfn [(subtree [m] (pythagorean-triple-tree (mapv (comp abs int) (matrix/transpose (matrix/inner-product m (matrix/transpose parent))))))]
+       {:parent parent
+        :left #(subtree A)
+        :mid #(subtree B)
+        :right #(subtree C)}))))
+
+(defn L-to-pythagorean-triples-under
+  ([L-max] (L-to-pythagorean-triples-under L-max (pythagorean-triple-tree) {}))
+  ([L-max triple-tree L-to-triples]
+   (let [L (reduce + (:parent triple-tree))]
+     (if (<= L L-max)
+       (->> (loop [a 1
+                   L-to-triples L-to-triples]
+              (if (<= (* L a) L-max)
+                (recur (inc a)
+                       (update L-to-triples
+                               (* L a)
+                               (fn [old]
+                                 (conj (or old [])
+                                       (mapv #(* % a)
+                                             (:parent triple-tree))))))
+                L-to-triples))
+            (L-to-pythagorean-triples-under L-max ((:left triple-tree)))
+            (L-to-pythagorean-triples-under L-max ((:mid triple-tree)))
+            (L-to-pythagorean-triples-under L-max ((:right triple-tree))))
+       L-to-triples))))
+
+(defn problem75
+  "
+  It turns out that 12cm is the smallest length of wire that can be bent to form an integer sided right angle triangle in exactly one way, but there are many more examples.
+
+    12cm: (3,4,5)
+    24cm: (6,8,10)
+    30cm: (5,12,13)
+    36cm: (9,12,15)
+    40cm: (8,15,17)
+    48cm: (12,16,20)
+
+  In contrast, some lengths of wire, like 20cm, cannot be bent to form an integer sided right angle triangle, and other lengths allow more than one solution to be found;
+  for example, using 120cm it is possible to form exactly three different integer sided right angle triangles.
+
+    120cm: (30,40,50), (20,48,52), (24,45,51)
+
+  Given that L is the length of the wire, for how many values of L<=1,500,000 can exactly one integer sided right angle triangle be formed?
+  "
+  []
+  (reduce + (map (fn [[L triples]] (if (= (count triples) 1) 1 0))
+                 (L-to-pythagorean-triples-under 1500000))))
+
+(defn sigma-1
+  "https://en.wikipedia.org/wiki/Divisor_function"
+  [n]
+  (+ n ;; divisors-sum is only proper divisors. Add n back in.
+     (divisors-sum n)))
+
+;; (def partitions
+;;   "https://en.wikipedia.org/wiki/Partition_function_(number_theory)#Recurrence_relations"
+;;   (memoize
+;;    (fn partitions-impl
+;;      [n]
+;;      (cond
+;;        (< n 0) 0
+;;        (= n 0) 1
+;;        :else (/ (reduce +
+;;                         (map (fn [k]
+;;                                (bigint (* (sigma-1 (- n k))
+;;                                           (partitions k))))
+;;                              (range n)))
+;;                 n)))))
+
+(def partitions
+  "https://en.wikipedia.org/wiki/Partition_function_(number_theory)#Recurrence_relations"
+  (memoize
+   (fn partitions-impl
+     [n]
+     (cond
+       (< n 0) 0
+       (= n 0) 1
+       (= n 1) 1
+       :else (loop [result 0N
+                    k 1]
+               (let [part1 (partitions (- n (pentagonal-number k)))
+                     part2 (partitions (- n (pentagonal-number (- k))))
+                     sign (if (= (mod k 2) 1) 1 -1)
+                     result (+ result (* sign (+ part1 part2)))]
+                 (if (and (= part1 0) (= part2 0))
+                   result
+                   (recur result (inc k)))))))))
+
+(defn problem76
+  "
+  It is possible to write five as a sum in exactly six different ways:
+    4 + 1
+    3 + 2
+    3 + 1 + 1
+    2 + 2 + 1
+    2 + 1 + 1 + 1
+    1 + 1 + 1 + 1 + 1
+  How many different ways can one hundred be written as a sum of at least two positive integers?
+  "
+  ;; 99 + 1, ..., 50 + 50 = 50 ways
+  ;; Then for each of those there are corresponding 3 number sums where the first number n is split into two (floor (/ n 2)) ways
+  ;; etc down to 100 1s.
+  ;; But that overcounts...
+  ;; 1+1+1+1+1
+  ;; (1+1)+1+1+1
+  ;; (1+1+1)+1+1
+  ;; (1+1+1+1)+1
+  ;; (1+1)+(1+1)+1
+  ;; (1+1+1)+(1+1)
+  ;; 2: 1 way
+  ;; 3: 2 ways (1+1+1, 2+1)
+  ;; 4: 4 ways (1+1+1+1, 2+1+1, 3+1, 2+2)
+  ;; 5: 6 ways
+  ;; 6: 10 ways
+    ;; 5 + 1
+    ;; 4 + 2
+    ;; 3 + 3
+    ;; 4 + 1 + 1
+    ;; 3 + 2 + 1
+    ;; 2 + 2 + 2
+    ;; 3 + 1 + 1 + 1
+    ;; 2 + 2 + 1 + 1
+    ;; 2 + 1 + 1 + 1 + 1
+    ;; 1 + 1 + 1 + 1 + 1 + 1
+  ;; 7: 14 ways
+    ;; 6 + 1
+    ;; 5 + 2
+    ;; 4 + 3
+    ;; 5 + 1 + 1
+    ;; 4 + 2 + 1
+    ;; 3 + 3 + 1
+    ;; 3 + 2 + 2
+    ;; 4 + 1 + 1 + 1
+    ;; 3 + 2 + 1 + 1
+    ;; 2 + 2 + 2 + 1
+    ;; 3 + 1 + 1 + 1 + 1
+    ;; 2 + 2 + 1 + 1 + 1
+    ;; 2 + 1 + 1 + 1 + 1 + 1
+    ;; 1 + 1 + 1 + 1 + 1 + 1 + 1
+  ;; n: p(n)-1 ways (where p(n) is the partition function described here: https://en.wikipedia.org/wiki/Partition_function_(number_theory))
+  ([] (problem76 100))
+  ([n]
+   (dec (partitions n))))
+
+(defn prime-divisor-sum [n]
+  (if (= n 1)
+    0
+    (reduce + (map first (prime-factorization n)))))
+
+(def prime-partitions
+  "https://math.stackexchange.com/questions/89240/prime-partition
+   https://oeis.org/A000607"
+  (memoize
+   (fn
+     [n]
+     (cond
+       (= n 0) 1
+       (= n 1) 0
+       :else (quot (+ (prime-divisor-sum n)
+                      (reduce +
+                              (map (fn [k] (* (prime-divisor-sum k)
+                                              (prime-partitions (- n k))))
+                                   (range 2 (dec n)))))
+                   n)))))
+
+(defn problem77
+  "
+  It is possible to write ten as the sum of primes in exactly five different ways:
+    7 + 3
+    5 + 5
+    5 + 3 + 2
+    3 + 3 + 2 + 2
+    2 + 2 + 2 + 2 + 2
+  What is the first value which can be written as the sum of primes in over five thousand different ways?
+  "
+  []
+  (first (drop-while #(< (prime-partitions %) 5000)
+                     (iterate inc 2))))
+
+
+(defn bonus-problem-sqrt13
+  "
+  The decimal expansion of the square root of two is 1.\\underline{4142135623}730...
+
+  If we define S(n,d) to be the the sum of the first d digits in the fractional part of the decimal expansion of (sqrt n),
+  it can be seen that S(2, 10) = 4 + 1 + 4 + ... + 3 = 31.
+
+  It can be confirmed that S(2,100)=481.
+
+  Find S(13,1000).
+
+  Note: Instead of just using arbitrary precision floats, try to be creative with your method.
+  "
+  ;; https://en.wikipedia.org/wiki/Continued_fraction#Roots_of_positive_numbers
+  ([] (bonus-problem-sqrt13 13 1000))
+  ([n d]
+   (let [c (continued-fraction-convergent (sqrt-continued-fraction n) (* 10 d))]
+     (loop [i d
+            frac (mod c 1)
+            s 0]
+       (if (> i 0)
+         (recur (dec i)
+                (mod (* 10 frac) 1)
+                (+ s (int (* 10 frac))))
+         s)))))
+
+(defn problem78
+  "
+  Let p(n) represent the number of different ways in which n coins can be separated into piles.
+  For example, five coins can be separated into piles in exactly seven different ways, so p(5) = 7.
+    OOOOO
+    OOOO   O
+    OOO   OO
+    OOO   O   O
+    OO   OO   O
+    OO   O   O   O
+    O   O   O   O   O
+
+  Find the least value of n for which p(n) is divisible by one million.
+  "
+  []
+  (first (drop-while #(not= (mod (partitions %) 1000000) 0)
+                     (iterate inc 100))))
+
+(defn problem79
+  "
+  A common security method used for online banking is to ask the user for three random characters from a passcode. For example, if the passcode was 531278, they may ask for the 2nd, 3rd, and 5th characters; the expected reply would be: 317.
+
+  The text file, keylog.txt, contains fifty successful login attempts.
+
+  Given that the three characters are always asked for in order, analyse the file so as to determine the shortest possible secret passcode of unknown length.
+  "
+  []
+  (let [input (slurp (io/resource "0079_keylog.txt"))
+        logins (map #(map Integer/parseInt (clojure.string/split % #"")) (clojure.string/split-lines input))]
+    (loop [logins logins
+           earlier-map {}
+           all-digits #{}]
+      (let [login (first logins)
+            [d1 d2 d3] login]
+        (if login
+          (recur (rest logins)
+                 (-> earlier-map
+                     (update d1 #(conj (or % #{}) d2 d3))
+                     (update d2 #(conj (or % #{}) d3)))
+                 (conj all-digits d1 d2 d3))
+          (->> earlier-map
+               (sort-by #(- (count (second %))))
+               (map first)
+               ((fn [ds] (concat ds (clojure.set/difference all-digits (set ds)))))
+               (apply str)))))))
+
+(defn sqrt-viete-decimal
+  "
+  https://en.wikipedia.org/wiki/Square_root_algorithms#Digit-by-digit_calculation
+  Calculates the square root of n to d decimal places
+  "
+  [n d]
+  (let [x-candidates (range 9 -1 -1)
+        one (loop [one 1] (if (<= (* 100 one) n) (recur (* 100 one)) one)) ;; highest power of 100 <= n
+        ]
+    (loop [c 0
+           d d
+           p 0
+           r n
+           one one
+           root []]
+      (if (or (<= d 0) (and (< one 1) (= c r 0)))
+        root
+        (let [c (+ (* 100 c) (quot r one))
+              [x y] (->> x-candidates
+                         (map (fn [x]
+                                [x
+                                 (* x (+ (* 20N p) x)) ;; y
+                                 ]))
+                         (drop-while (fn [[_x y]] (> y c)))
+                         (first))
+              ]
+          (recur (- c y)
+                 (dec d) ;; (if (< one 1) (dec d) d)
+                 (+ (* p 10N) x)
+                 (rem r one)
+                 (/ one 100)
+                 (conj (if (= one (/ 1 100))
+                         (conj root \.)
+                         root)
+                       x)))))))
+
+(defn problem80
+  "
+  It is well known that if the square root of a natural number is not an integer, then it is irrational. The decimal expansion of such square roots is infinite without any repeating pattern at all.
+
+  The square root of two is 1.41421356237309504880..., and the digital sum of the first one hundred decimal digits is 475.
+
+  For the first one hundred natural numbers, find the total of the digital sums of the first one hundred decimal digits for all the irrational square roots.
+  "
+  []
+  (->> (range 100)
+       (map #(sqrt-viete-decimal % 100))
+       (filter #(= 101 (count %)))
+       (map #(reduce + (filter (fn [d] (not= d \.)) %)))
+       (reduce +)))
+
+(defn problem81
+  "
+  In the 5 by 5 matrix below, the minimal path sum from the top left to the bottom right, by only moving to the right and down, is indicated in bold red and is equal to 2427.
+
+    begin{pmatrix}
+    color{red}{131} & 673            & 234             & 103             & 18
+    color{red}{201} & color{red}{96} & color{red}{342} & 965             & 150
+    630             & 803            & color{red}{746} & color{red}{422} & 111
+    537             & 699            & 497             & color{red}{121} & 956
+    805             & 732            & 524             & color{red}{37}  & color{red}{331}
+    end{pmatrix}
+
+  Find the minimal path sum from the top left to the bottom right by only moving right and down in matrix.txt (right click and \"Save Link/Target As...\"), a 31K text file containing an 80 by 80 matrix.
+  "
+  []
+  (let [input (slurp (io/resource "0081_matrix.txt"))
+        m (mapv #(mapv Integer/parseInt (clojure.string/split % #","))
+                (clojure.string/split-lines input))
+        h (count m)
+        w (count (first m))
+        min-sums (loop [c (dec w)
+                        r (- h 2)
+                        min-sums (assoc-in (vec (repeat h (vec (repeat w nil))))
+                                           [(dec h) (dec w)]
+                                           (get-in m [(dec h) (dec w)]))]
+                   (if (< c 0)
+                     min-sums
+                     (if (< r 0)
+                       (recur (dec c)
+                              (dec h)
+                              min-sums)
+                       (recur c
+                              (dec r)
+                              (assoc-in min-sums [r c] (+ (get-in m [r c])
+                                                          (min (get-in min-sums [r (inc c)] Float/POSITIVE_INFINITY)
+                                                               (get-in min-sums [(inc r) c] Float/POSITIVE_INFINITY))))))))]
+    (get-in min-sums [0 0])))
+
+(defn problem82
+  "Same as 81, but can also go up, starts anywhere in the first column and ends anywhere in the last column."
+  []
+  (let [input (slurp (io/resource "0082_matrix.txt"))
+        m (mapv #(mapv Integer/parseInt (clojure.string/split % #","))
+                (clojure.string/split-lines input))
+        h (count m)
+        w (count (first m))
+        min-sums (vec (repeat h (vec (repeat w nil))))
+        min-sums (reduce (fn [min-sums r]
+                           (assoc-in min-sums
+                                     [r (dec w)]
+                                     (get-in m [r (dec w)])))
+                         min-sums
+                         (range h))
+        min-sums (reduce (fn [min-sums c]
+                           (reduce (fn [min-sums r]
+                                     (assoc-in min-sums
+                                               [r c]
+                                               (+ (get-in m [r c])
+                                                  (get-in min-sums [r (inc c)]))))
+                                   min-sums
+                                   (range (dec h) -1 -1)))
+                         min-sums
+                         (range (- w 2) -1 -1))
+        min-sums (loop [min-sums min-sums]
+                   (let [new-min-sums (reduce (fn [min-sums c]
+                           (reduce (fn [min-sums r]
+                                     (assoc-in min-sums
+                                               [r c]
+                                               (+ (get-in m [r c])
+                                                  (min (get-in min-sums [r (inc c)])
+                                                       (get-in min-sums [(dec r) c] Float/POSITIVE_INFINITY)
+                                                       (get-in min-sums [(inc r) c] Float/POSITIVE_INFINITY)))))
+                                   min-sums
+                                   (range (dec h) -1 -1)))
+                         min-sums
+                         (range (- w 2) -1 -1))]
+                     (if (= min-sums new-min-sums)
+                       min-sums
+                       (recur new-min-sums))))
+        ]
+    (apply min (map first min-sums))))
+
+(defn problem83
+  "Like problem 81, but can move all four cardinal directions. Start is 0,0 and goal is 79,79"
+  []
+  (let [input (slurp (io/resource "0082_matrix.txt"))
+        m (mapv #(mapv Integer/parseInt (clojure.string/split % #","))
+                (clojure.string/split-lines input))
+        h (count m)
+        w (count (first m))
+        min-cell (apply min (flatten m))
+        goal [(dec h) (dec w)]
+        heur (fn [r c]
+            (* min-cell
+               (+ (- (dec h) r)
+                  (- (dec w) c))))
+        f (fn [r c g]
+            (+ g (heur r c)))
+        priority-compare (fn [[r1 c1 g1] [r2 c2 g2]]
+                           (compare [(f r1 c1 g1) r1 c1]
+                                    [(f r2 c2 g2) r2 c2]))]
+    (loop [open (sorted-set-by priority-compare [0 0 (get-in m [0 0])])
+           visited #{}
+           g {[0 0] (get-in m [0 0])}]
+      (assert (not-empty open) "No path found")
+      (let [[r c grc :as cur] (first open)]
+        ;; (pprint {:r r :c c :g grc})
+        (if (= [r c] goal)
+          grc
+          (let [open (disj open cur)
+                neighbors (filter (fn [[nr nc]]
+                                    (and (not (visited [nr nc])) (>= nr 0) (>= nc 0) (< nr h) (< nc w)))
+                                  [[(dec r) c] [(inc r) c] [r (dec c)] [r (inc c)]])
+                [open g] (reduce (fn [[open g] [nr nc]]
+                                   (let [g-tentative (+ grc (get-in m [nr nc]))
+                                         gn (get g [nr nc] Float/POSITIVE_INFINITY)]
+                                     (if (< g-tentative gn)
+                                       [(conj (disj open [nr nc gn]) [nr nc g-tentative])
+                                        (assoc g [nr nc] g-tentative)]
+                                       [open g])))
+                                 [open g]
+                                 neighbors)]
+            (recur open
+                   (conj visited [r c])
+                   g)))))))
+
+(defn weights-to-thresholds
+  "Takes a map of outcome to weight and returns a vec of pairs of thresholds in the range (0, 1] and outcomes"
+  [ws]
+  (let [total (reduce + (vals ws))]
+    (reduce (fn [ts [outcome weight]]
+              (conj ts [(+ (or (first (last ts)) 0)
+                           (/ weight total))
+                        outcome]))
+            []
+            ws)))
+
+(defn weights-to-probabilities
+  "Takes a map of outcome to weight and returns a map of outcome to probability [0,1)"
+  [ws]
+  (let [total (reduce + (vals ws))]
+    (into {} (map (fn [[o w]]
+                    [o (/ w total)])
+                  ws))))
+
+(defn normalize
+  "Takes a seq of numbers and returns a seq of numbers [0,1) where the ratio between seq elements is equal to the original"
+  [s]
+  (let [total (reduce + s)]
+    (map #(/ % total) s)))
+
+(def weights-2d6 {2 1
+                  3 2
+                  4 3
+                  5 4
+                  6 5
+                  7 6
+                  8 5
+                  9 4
+                  10 3
+                  11 2
+                  12 1})
+(def distribution-2d6
+  (weights-to-probabilities weights-2d6))
+(def weights-2d4 {2 1
+                  3 2
+                  4 3
+                  5 4
+                  6 3
+                  7 2
+                  8 1})
+(def distribution-2d4
+  (weights-to-probabilities weights-2d4))
+(def deck-CC (concat [[:goto 0]
+                      [:goto 10]]
+                     (repeat 14 [:rel 0])))
+(def weights-CC {[:goto 0] 1
+                 [:goto 10] 1
+                 [:rel 0] 14})
+(def distribution-CC
+  (weights-to-probabilities weights-CC))
+(def deck-CH (concat [[:goto 0]
+                      [:goto 10]
+                      [:goto 11]
+                      [:goto 24]
+                      [:goto 39]
+                      [:goto 5]
+                      [:goto :next-rail]
+                      [:goto :next-rail]
+                      [:goto :next-util]
+                      [:rel -3]]
+                     (repeat 6 [:rel 0])))
+(def weights-CH {[:goto 0] 1
+                 [:goto 10] 1
+                 [:goto 11] 1
+                 [:goto 24] 1
+                 [:goto 39] 1
+                 [:goto 5] 1
+                 [:goto :next-rail] 2
+                 [:goto :next-util] 1
+                 [:rel -3] 1
+                 [:rel 0] 6})
+(def distribution-CH
+  (weights-to-probabilities weights-CH))
+
+(def monopoly-cc-squares #{2 17 33})
+(def monopoly-ch-squares #{7 22 36})
+(def monopoly-util-squares #{12 28})
+(defn next-util
+  [square]
+  (let [util-distances (map #(vector (mod (- % square) 40) %) monopoly-util-squares)]
+    (->> util-distances
+         (sort-by first)
+         (first)
+         (second))))
+(defn next-rail
+  [square]
+  (mod (+ (* 10 (round (/ square 10)))
+          5)
+       40))
+(defn card-edge-fn
+  [square prob is-double]
+  (fn [[[action n] card-prob]]
+    (let [total-prob (* prob card-prob)]
+      (case action
+        :goto (case n
+                :next-rail [{:to (next-rail square) :double is-double} total-prob]
+                :next-util [{:to (next-util square) :double is-double} total-prob]
+                [{:to n :double is-double} total-prob])
+        :rel [{:to (+ square n) :double is-double} total-prob]
+        (assert false (str "Unknown action: " action))))))
+(defn monopoly-edges
+  [roll-dist]
+  (let [max-roll (apply max (keys roll-dist))]
+    (into {}
+          (map (fn [square]
+                 [square
+                  (reduce (fn [e [next-square p]]
+                            (update e next-square (fn [cur] (+ (or cur 0) p))))
+                          {}
+                          (apply concat
+                                 (map (fn [[roll prob]]
+                                        (let [next-square (mod (+ square roll) 40)]
+                                          (cond
+                                            (contains? monopoly-cc-squares next-square)
+                                            (map (card-edge-fn next-square prob (= roll max-roll)) distribution-CC)
+                                            (contains? monopoly-ch-squares next-square)
+                                            (map (card-edge-fn next-square prob (= roll max-roll)) distribution-CH)
+                                            :else [[{:to next-square :double (= roll max-roll)} prob]])))
+                                      roll-dist)))])
+               (range 40)))))
+
+(defn roll
+  "Roll n d-sided dice and add the results"
+  [n d]
+  (reduce + (map (fn [_] (inc (rand-int d))) (range n))))
+
+(defn draw-card
+  [dist]
+  (let [r (rand)
+        thresholds (weights-to-thresholds dist)]
+    (second (first (drop-while #(< (first %) r) thresholds)))))
+
+(defn problem84
+  "
+  In the game, Monopoly, the standard board is set up in the following way:
+  0084_monopoly_board.png
+
+  A player starts on the GO square and adds the scores on two 6-sided dice to determine the number of squares they advance in a clockwise direction.
+  Without any further rules we would expect to visit each square with equal probability: 2.5%.
+  However, landing on G2J (Go To Jail), CC (community chest), and CH (chance) changes this distribution.
+
+  In addition to G2J, and one card from each of CC and CH, that orders the player to go directly to jail, if a player rolls three consecutive doubles, they do not advance the result of their 3rd roll.
+  Instead they proceed directly to jail.
+
+  At the beginning of the game, the CC and CH cards are shuffled.
+  When a player lands on CC or CH they take a card from the top of the respective pile and, after following the instructions, it is returned to the bottom of the pile.
+  There are sixteen cards in each pile, but for the purpose of this problem we are only concerned with cards that order a movement;
+  any instruction not concerned with movement will be ignored and the player will remain on the CC/CH square.
+
+    Community Chest (2/16 cards):
+        Advance to GO
+        Go to JAIL
+    Chance (10/16 cards):
+        Advance to GO
+        Go to JAIL
+        Go to C1
+        Go to E3
+        Go to H2
+        Go to R1
+        Go to next R (railway company)
+        Go to next R
+        Go to next U (utility company)
+        Go back 3 squares.
+
+  The heart of this problem concerns the likelihood of visiting a particular square.
+  That is, the probability of finishing at that square after a roll.
+  For this reason it should be clear that, with the exception of G2J for which the probability of finishing on it is zero,
+  the CH squares will have the lowest probabilities, as 5/8 request a movement to another square,
+  and it is the final square that the player finishes at on each roll that we are interested in.
+  We shall make no distinction between \"Just Visiting\" and being sent to JAIL,
+  and we shall also ignore the rule about requiring a double to \"get out of jail\",
+  assuming that they pay to get out on their next turn.
+
+  By starting at GO and numbering the squares sequentially from 00 to 39 we can concatenate these two-digit numbers to produce strings that correspond with sets of squares.
+
+  Statistically it can be shown that the three most popular squares, in order, are JAIL (6.24%) = Square 10, E3 (3.18%) = Square 24, and GO (3.09%) = Square 00.
+  So these three most popular squares can be listed with the six-digit modal string: 102400.
+
+  If, instead of using two 6-sided dice, two 4-sided dice are used, find the six-digit modal string.
+  "
+  ;; ([] (problem84 distribution-2d4))
+  ;; ([roll-dist]
+  ;;  (let [edges (monopoly-edges roll-dist)
+  ;;        epsilon Float/MIN_NORMAL]
+  ;;    (loop [square-counts (transient (vec (repeat 40 0)))
+  ;;           queue [{:square 0 :cum-prob 1.0 :depth 0 :double-count 0}]]
+  ;;      (if (empty? queue)
+  ;;        (->> square-counts
+  ;;             (persistent!)
+  ;;             (normalize)
+  ;;             (map-indexed #(vector %1 (* 100 %2)))
+  ;;             (sort-by #(- (second %)))
+  ;;             (take 3))
+  ;;        (let [{cur :square cum-prob :cum-prob depth :depth double-count :double-count} (first queue)
+  ;;              queue (rest queue)
+  ;;              cur-edges (edges cur)
+  ;;              [square-probs queue] (reduce (fn [[square-counts queue] [{dest :to is-double :double} edge-prob]]
+  ;;                                             (let [third-double (and (= double-count 2) is-double)
+  ;;                                                   next-prob (* cum-prob edge-prob)
+  ;;                                                   dest (if third-double 10 dest)]
+  ;;                                               (if (> next-prob epsilon)
+  ;;                                                 [(assoc! square-counts dest (+ (square-counts dest) next-prob))
+  ;;                                                  (conj queue {:square dest :cum-prob next-prob
+  ;;                                                               :depth (inc depth)
+  ;;                                                               :double-count (cond third-double 0
+  ;;                                                                                   is-double (inc double-count)
+  ;;                                                                                   :else 0)})]
+  ;;                                                 [square-counts queue])))
+  ;;                                           [square-counts queue]
+  ;;                                           cur-edges)]
+  ;;          (recur square-probs queue))))))
+  ([] (problem84 4 1000000))
+  ([d num-rolls]
+   (loop [square-count (into (hash-map) (map #(vector %1 0) (range 40)))
+          double-count 0
+          current-square 0
+          roll-count 0
+          CC (shuffle deck-CC)
+          CH (shuffle deck-CH)]
+     (let [roll1 (roll 1 d)
+           roll2 (roll 1 d)
+           double-count (if (= roll1 roll2)
+                          (inc double-count)
+                          0)
+           roll-count (inc roll-count)
+           dst (if (>= double-count 3)
+                 10 ;; jail
+                 (mod (+ current-square roll1 roll2) 40))
+           double-count (if (>= double-count 3) 0 double-count)
+           dst (if (= dst 30) 10 dst) ;; G2J
+           ;; CH3 can go back 3 and land on CC3, so do CH first
+           [dst CH] (if (contains? monopoly-ch-squares dst)
+                      (let [card (first CH)
+                            CH (concat (rest CH) [card])
+                            [action n] card]
+                        [(case action
+                           :goto (case n
+                                   :next-rail (next-rail dst)
+                                   :next-util (next-util dst)
+                                   n)
+                           :rel (mod (+ dst n) 40)
+                           (assert false (str "Unknown action: " action)))
+                         CH])
+                      [dst CH])
+           [dst CC] (if (contains? monopoly-cc-squares dst)
+                      (let [card (first CC)
+                            CC (concat (rest CC) [card])
+                            [action n] card]
+                        [(case action
+                           :goto (case n
+                                   :next-rail (next-rail dst)
+                                   :next-util (next-util dst)
+                                   n)
+                           :rel (mod (+ dst n) 40)
+                           (assert false (str "Unknown action: " action)))
+                         CC])
+                      [dst CC])
+           square-count (update square-count dst inc)]
+       (if (> roll-count num-rolls)
+         (take 3 (reverse (sort-by second square-count)))
+         (recur square-count
+                double-count
+                dst
+                roll-count
+                CC
+                CH))))))
+
+(defn contained-rectangles
+  [n m]
+  (* (- (* n n) (/ (* n (dec n))
+                   2))
+     (- (* m m) (/ (* m (dec m))
+                   2))))
+
+(defn problem85
+  "
+  By counting carefully it can be seen that a rectangular grid measuring 3 by 2 contains eighteen rectangles:
+
+    x..  xx.  xxx
+    ...  ...  ...
+     6    4    2
+
+    x..  xx.  xxx
+    x..  xx.  xxx
+     3    2    1
+
+  Although there exists no rectangular grid that contains exactly two million rectangles, find the area of the grid with the nearest solution.
+  "
+  ;; nxm:
+  ;; 1x1: nxm
+  ;; 2x1: (n-1)xm
+  ;; 3x1: (n-2)xm
+  ;; ...
+  ;; 1x2: nx(m-1)
+  ;; 1x3: nx(m-2)
+  ;; ...
+  ;; 2x2: (n-1)x(m-1)
+  ;; axb: (n-a+1)x(m-b+1)
+  ;; num-rects(n,m) = sum(a=[1,n+1), sum(b=[1,m+1), (n-(a-1)) * (m-(b-1))))
+  ;;   = sum(a=[0,n), sum(b=[0,m), (n-a) * (m-b)))
+  ;;   = sum(a=[0,n), (n-a) * sum(b=[0,m), m-b))
+  ;;   = sum(a=[0,n), (n-a) * (m^2 - sum(b=[0,m), b)))
+  ;;   = sum(a=[0,n), (n-a) * (m^2 - m*(m-1)/2))
+  ;;   = (m^2 - m*(m-1)/2) * sum(a=[0,n), (n-a))
+  ;;   = (m^2 - m*(m-1)/2) * (n^2 - n*(n-1)/2)
+  []
+  (loop [n 1
+         m 1
+         min-diff Float/POSITIVE_INFINITY
+         best [0 0]
+         area 0]
+    (let [c (contained-rectangles n m)
+          diff (abs (- 2000000 c))
+          [min-diff area best] (if (< diff min-diff)
+                                 [diff (* n m) [n m]]
+                                 [min-diff area best])]
+      (if (> c 2000000)
+        (if (= n 1)
+          [area best]
+          (recur 1 (inc m) min-diff best area))
+        (recur (inc n) m min-diff best area)))))
+
+(defn problem86
+  "
+  A spider, S, sits in one corner of a cuboid room, measuring 6 by 5 by 3, and a fly, F, sits in the opposite corner.
+  By travelling on the surfaces of the room the shortest \"straight line\" distance from S to F is 10 and the path is shown on the diagram.
+
+  However, there are up to three \"shortest\" path candidates for any given cuboid and the shortest route doesn't always have integer length.
+
+  It can be shown that there are exactly 2060 distinct cuboids, ignoring rotations, with integer dimensions,
+  up to a maximum size of M by M by M, for which the shortest route has integer length when M=100.
+  This is the least value of M for which the number of solutions first exceeds two thousand; the number of solutions when M=99 is 1975.
+
+  Find the least value of M such that the number of solutions first exceeds one million.
+  "
+  []
+  (loop [solution-count 0
+         a 1
+         b 1
+         c 1]
+    (let [solution-count (if (pythagorean-triplet c (+ a b)) (inc solution-count) solution-count)]
+      (cond (> solution-count 1000000) c
+            (< a b) (recur solution-count (inc a) b c)
+            (< b c) (recur solution-count 1 (inc b) c)
+            :else (do
+                    ;; (when (or (= c 99) (= c 100))
+                    ;;   (pprint {:M c :solutions solution-count}))
+                    (recur solution-count 1 1 (inc c)))))))
+
+(defn problem87
+  "
+
+  The smallest number expressible as the sum of a prime square, prime cube, and prime fourth power is 28.
+  In fact, there are exactly four numbers below fifty that can be expressed in such a way:
+    28 &= 2^2 + 2^3 + 2^4
+    33 &= 3^2 + 2^3 + 2^4
+    49 &= 5^2 + 2^3 + 2^4
+    47 &= 2^2 + 3^3 + 2^4
+  How many numbers below fifty million can be expressed as the sum of a prime square, prime cube, and prime fourth power?
+  "
+  ([] (problem87 50000000))
+  ([limit]
+   (let [ps (sieve-of-eratosthenes (sqrt limit))
+         prime-squares (map #(* % %) ps)
+         prime-cubes (map #(* % % %) ps)
+         prime-fourths (map #(* % % % %) ps)]
+     (loop [p2s prime-squares
+            p3s prime-cubes
+            p4s prime-fourths
+            sums (hash-set)]
+       (if (or (empty? p4s) (> (first p4s) limit))
+         (count sums)
+         (if (or (empty? p3s) (> (+ (first p3s) (first p4s)) limit))
+           (recur prime-squares
+                  prime-cubes
+                  (rest p4s)
+                  sums)
+           (if (or (empty? p2s) (> (+ (first p2s) (first p3s) (first p4s)) limit))
+             (recur prime-squares
+                    (rest p3s)
+                    p4s
+                    sums)
+             (recur (rest p2s)
+                    p3s
+                    p4s
+                    (conj sums (+ (first p2s) (first p3s) (first p4s)))))))))))
+
+(defn natural-number-sets
+  "Infinite! seq of seqs of length n descending natural numbers."
+  ([n] (natural-number-sets n 1 :top))
+  ([n lim top] (lazy-cat (map #(cons lim %) (natural-number-sets (dec n) lim))
+                         (natural-number-sets n (inc lim) :top)))
+  ([n lim] (if (<= n 0)
+             '(())
+             (apply concat
+                    (map (fn [head]
+                           (map #(cons head %)
+                                (lazy-seq (natural-number-sets (dec n) head))))
+                         (range 1 (inc lim)))))))
+
+(defn product-sums
+  "https://arxiv.org/pdf/2508.09647"
+  ([n] (product-sums n 1 0 0 n))
+  ([n p s i m]
+   (cond
+     (> p (- (+ s n) i)) '()
+     (= p (- (+ s n) i)) (list (repeat (- n i) 1))
+     :else (apply concat (map (fn [a']
+                                (map #(cons a' %)
+                                     (product-sums n (* p a') (+ s a') (inc i) a')))
+                              (range 2 (inc m)))))))
+
+(def product-sum-exceptional-values #{2 3 4 6 24 114 174 444})
+
+(defn min-product-sum
+  "https://arxiv.org/pdf/2508.09647"
+  ([n] (if (product-sum-exceptional-values n)
+         (* 2 n)
+         (min-product-sum n 1 0 0 (/ (* 2 n)
+                                     3))))
+  ([n p s i m]
+   (cond
+     (> p (- (+ s n) i)) nil
+     (= p (- (+ s n) i)) p
+     :else (let [sols (filter #(not (nil? %))
+                          (map (fn [a']
+                                 (min-product-sum n (* p a') (+ s a') (inc i) a'))
+                               (range 2
+                                      (inc
+                                       (min m
+                                            (if (= p 1)
+                                              m
+                                              (/ (- (+ s n) (inc i))
+                                                 (dec p))))))))]
+             (if (empty? sols)
+               nil
+               (apply min sols))))))
+
+(defn min-product-sum-opt
+  ([n] (if (product-sum-exceptional-values n)
+         (* 2 n)
+         (min-product-sum-opt n 1 0 0
+                              (/ (* 2 n)
+                                 3)
+                              (* 2 n))))
+  ([n p s i m min-ps]
+   (cond
+     (> p (- (+ s n) i)) nil
+     (= p (- (+ s n) i)) p
+     (or (< min-ps (+ s (- n i)))
+         (< min-ps p)) nil ;; this isn't the min solution
+     :else (let [min-ps (reduce (fn [min-ps a']
+                                  (let [sol (min-product-sum-opt n (* p a') (+ s a') (inc i) a' min-ps)]
+                                    (if (nil? sol)
+                                      min-ps
+                                      sol)))
+                                min-ps
+                                (range 2
+                                       (inc
+                                        (min m
+                                             (if (= p 1)
+                                               m
+                                               (/ (- (+ s n) (inc i))
+                                                  (dec p)))))))]
+             min-ps))))
+
+(defn problem88
+  "
+  A natural number, N, that can be written as the sum and product of a given set of at least two natural numbers,
+  {a_1,a_2,...,a_k} is called a product-sum number: N=a_1+a_2+...+a_k=a_1*a_2*...*a_k.
+
+  For example, 6=1+2+3=1*2*3.
+
+  For a given set of size, k, we shall call the smallest N with this property a minimal product-sum number.
+  The minimal product-sum numbers for sets of size, k=2,3,4,5, and 6 are as follows.
+
+    k=2: 4=2*2=2+2
+    k=3: 6=(* 1 2 3)=(+ 1 2 3)
+    k=4: 8=(* 1 1 2 4)=(+ 1 1 2 4)
+    k=5: 8=(* 1 1 2 2 2)=(+ 1 1 2 2 2)
+    k=6: 12=(* 1 1 1 1 2 6)=(+ 1 1 1 1 2 6)
+
+  Hence for 2<=k<=6, the sum of all the minimal product-sum numbers is 4+6+8+12=30;
+  note that 8 is only counted once in the sum.
+
+  In fact, as the complete set of minimal product-sum numbers for 2<=k<=12 is {4,6,8,12,15,16}, the sum is 61.
+
+  What is the sum of all the minimal product-sum numbers for 2<=k<=12000?
+  "
+  ;; For each integer n≥2, this equation always has at least one solution: (1,1,...,1,2,n),
+  ;; where there are n−2 1s,followed by a 2 and an n. Let’s call this the basic solution.
+  ;;
+  ;; BOUNDEDNESS PROPOSITION 1. If v=x1+x2+···+xn=x1x2...xn
+  ;; for positive integers n >1and x1≤x2≤x3≤···≤ xn, then the common value of
+  ;; sum and product for any solution n-tuple is at most 2n: v≤2n.
+  ;;
+  ;; BOUNDEDNESS PROPOSITION 2. If x1+x2+···+xn=x1x2...xn for positive
+  ;; integers n >1 and x1≤x2≤x3≤···≤xn, then xn≤n. That is, the largest coordi-
+  ;; nate of any solution is bounded from above by the number of coordinates.
+  ;;
+  ;; Given those boundedness propositions, the basic solution is always the maximal solution
+  ;;
+  ;; Let’s call a value of n exceptional if the corresponding basic solution is the only one.
+  ;; CONJECTURE.The set of exceptional values is ﬁnite: E = {2,3,4,6,24,114,174,444}.
+  ;; As of mid-2000, I (Ecker) had tested up to n=316,200,000, using improved computer
+  ;; programs by Harry J. Smith and Alan Zimmermann. In turn, they tested further, going
+  ;; past 10,000,000,000. We’ve found no other solutions
+  ;;
+  ;; k=9: 15=(* 1 1 1 1 1 1 1 3 5)=(+ 1 1 1 1 1 1 1 3 5)
+  ;; which is less than the basic solution 18=(* 1 1 1 1 1 1 1 2 9) = (+ 1 1 1 1 1 1 1 2 9)
+  ;; see https://www.researchgate.net/publication/270185488_When_Does_a_Sum_of_Positive_Integers_Equal_Their_Product
+  ;;
+  ;; Thus non-basic solutions are not necessarily always a previous basic solution.
+  ;;
+  ;; https://arxiv.org/pdf/2508.09647 gives an algorithm for finding all solutions.
+  ([] (problem88 12000))
+  ([limit]
+   (let [min-prod-sums (map min-product-sum-opt (range 2 (inc limit)))]
+     (reduce + (into #{} min-prod-sums)))))
+
+(def roman-numeral-components
+  [["M" 1000]
+   ["CM" 900]
+   ["D" 500]
+   ["CD" 400]
+   ["C" 100]
+   ["XC" 90]
+   ["L" 50]
+   ["XL" 40]
+   ["X" 10]
+   ["IX" 9]
+   ["V" 5]
+   ["IV" 4]
+   ["I" 1]])
+
+(defn roman-numeral-to-number
+  ([numeral] (roman-numeral-to-number numeral 0))
+  ([numeral s]
+   (if (empty? numeral)
+     s
+     (let [[comp n] (some (fn [[comp n]]
+                            (if (str/starts-with? numeral comp)
+                              [comp n]
+                              false))
+                          roman-numeral-components)]
+       (recur (subs numeral (count comp)) (+ s n))))))
+
+(defn number-to-roman-numeral
+  ([n] (number-to-roman-numeral n []))
+  ([n s]
+   (cond
+     (< n 0) (assert false "Overshot roman numeral")
+     (= n 0) (apply str s)
+     :else (let [[comp n'] (some #(if (>= n (second %))
+                                   %
+                                   false)
+                                roman-numeral-components)]
+             (recur (- n n') (conj s comp))))))
+
+(defn problem89
+  "
+  For a number written in Roman numerals to be considered valid there are basic rules which must be followed.
+  Even though the rules allow some numbers to be expressed in more than one way there is always a \"best\" way of writing a particular number.
+
+  For example, it would appear that there are at least six ways of writing the number sixteen:
+
+    IIIIIIIIIIIIIIII
+    VIIIIIIIIIII
+    VVIIIIII
+    XIIIIII
+    VVVI
+    XVI
+
+  However, according to the rules only XIIIIII and XVI are valid,
+  and the last example is considered to be the most efficient,
+  as it uses the least number of numerals.
+
+  The 11K text file, roman.txt (right click and 'Save Link/Target As...'),
+  contains one thousand numbers written in valid, but not necessarily minimal, Roman numerals;
+  see About... Roman Numerals for the definitive rules for this problem.
+
+  Find the number of characters saved by writing each of these in their minimal form.
+
+  Note: You can assume that all the Roman numerals in the file contain no more than four consecutive identical units.
+  "
+  []
+  (let [input (slurp (io/resource "0089_roman.txt"))
+        numerals (str/split-lines input)
+        numbers (map roman-numeral-to-number numerals)
+        min-numerals (map number-to-roman-numeral numbers)]
+    (reduce + (map #(- (count %1) (count %2))
+                   numerals
+                   min-numerals))))
+
+(defn choices
+  [c n]
+  (assert (>= (count c) n))
+  (cond
+    (= n 0) (list #{})
+    (= (count c) n) (list (into #{} c))
+    :else (concat (choices (rest c) n)
+                  (map #(conj % (first c))
+                       (choices (rest c) (dec n))))))
+
+(defn problem90
+  "
+  Each of the six faces on a cube has a different digit (0 to 9) written on it;
+  the same is done to a second cube.
+  By placing the two cubes side-by-side in different positions we can form a variety of 2-digit numbers.
+
+  For example, the square number 64 could be formed:
+
+  --- ---
+  |6| |4|
+  --- ---
+
+  In fact, by carefully choosing the digits on both cubes it is possible to display all of the square numbers below one-hundred:
+  01, 04, 09, 16, 25, 36, 49, 64, and 81.
+
+  For example, one way this can be achieved is by placing {0,5,6,7,8,9} on one cube and {1,2,3,4,8,9} on the other cube.
+
+  However, for this problem we shall allow the 6 or 9 to be turned upside-down
+  so that an arrangement like {0,5,6,7,8,9} and {1,2,3,4,6,7} allows for all nine square numbers to be displayed;
+  otherwise it would be impossible to obtain 09.
+
+  In determining a distinct arrangement we are interested in the digits on each cube, not the order.
+
+   {1,2,3,4,5,6} is equivalent to {3,6,4,1,2,5}
+   {1,2,3,4,5,6} is distinct from {1,2,3,4,5,9}
+
+  But because we are allowing 6 and 9 to be reversed, the two distinct sets in the last example both represent the extended set
+  {1,2,3,4,5,6,9} for the purpose of forming 2-digit numbers.
+
+  How many distinct arrangements of the two cubes allow for all of the square numbers to be displayed?
+  "
+  []
+  (let [sets (choices (range 10) 6)
+        squares (map #(* % %) (range 1 10))
+        check (fn [a b]
+                (every? (fn [n]
+                          (or (and (a (quot n 10))
+                                   (b (rem n 10)))
+                              (and (b (quot n 10))
+                                   (a (rem n 10)))))
+                        squares))
+        extend (fn [s]
+                 (if (s 6)
+                   (conj s 9)
+                   (if (s 9)
+                     (conj s 6)
+                     s)))]
+    (loop [sets (map extend sets)
+           c 0]
+      (if (empty? sets)
+        c
+        (let [a (first sets)]
+          (recur (rest sets)
+                 (+ c (count (filter (partial check a)
+                                     (rest sets))))))))))
+
+(defn problem91
+  "
+  The points P(x_1,y_1) and Q(x_2,y_2) are plotted at integer co-ordinates and are joined to the origin, O(0,0),
+  to form △OPQ.
+
+  There are exactly fourteen triangles containing a right angle that can be formed when each co-ordinate lies between
+  0 and 2 inclusive; that is, 0<=x1,y1,x2,y2<=2.
+
+  Right at O
+  P(0,1) Q(1,0)
+  P(0,2) Q(1,0)
+  P(0,1) Q(2,0)
+  P(0,2) Q(2,0)
+
+  Right at Q, Q on x-axis
+  P(1,1) Q(1,0)
+  P(1,2) Q(1,0)
+  P(2,1) Q(2,0)
+  P(2,2) Q(2,0)
+  Right at Q, P on y-axis
+  P(0,2) Q(1,1)
+
+  Right at P, P on y-axis
+  P(0,1) Q(1,1)
+  P(0,1) Q(2,1)
+  P(0,2) Q(1,2)
+  P(0,2) Q(2,2)
+  Right at P, Q on x-axis
+  P(1,1) Q(2,0)
+
+  Given that 0<=x1,y1,x2,y2<=50, how many right triangles can be formed?
+  "
+  ;; Three categories: 90 at origin, 90 at P, and 90 at Q
+  ;; 90 at P and 90 at Q each have 2 sub-categories: P on y-axis and Q on x-axis.
+  ;; Right at P, Q on x-axis or Right at Q, P on y-axis means the hypotnuse is on an axis.
+  ;; Other than the hypotnuse-on-axis cases, each category has nxn triangles
+  ;; There is a hypotnuse-on-axis case when h^2 = 2*2*x^2 (x=y for non-axis point)
+  ;; aka when h^2/4 is a perfect square.
+  ;; This happens for every even h. x=y=h/2
+  ;;
+  ;; The above does not count triangles where neither P nor Q are on the axis.
+  ;; This case is not represented in limit 2...
+  ;;
+  ([] (problem91 50))
+  ([limit]
+   (let [epsilon 0.1]
+     (+
+      ;; (* 3 limit limit) ;; Non-hypotnuse-on-axis
+      ;; (* 2 (quot limit 2)) ;; h-on-axis (even h_s other than 0, once for each axis)
+      (* limit limit) ;; Right at O
+      (reduce +
+              (map (fn [[x y]]
+                     (if (= x y 0)
+                       0 ;; skip O
+                       (do
+                         ;; (pprint [x y])
+                         (let [θ (if (= x 0)
+                                   (/ PI 2)
+                                   (atan (/ y x)))
+                               dx (if (= y 0)
+                                    0
+                                    1)
+                               dy (if (= y 0)
+                                    1
+                                    (/ (sin (- (/ PI 2) θ))
+                                       (cos (- (/ PI 2) θ))))]
+                           (loop [x2 (if (= y 0)
+                                       x
+                                       0)
+                                  y2 (if (= y 0)
+                                       limit
+                                       (+ y (* dy x)))
+                                  c 0]
+                             (if (or (< y2 0)
+                                     (> x2 limit))
+                               c
+                               (recur (+ x2 dx)
+                                      (- y2 dy)
+                                      (+ c (let [x2 (int (round x2))
+                                                 y2 (int (round y2))]
+                                             ;; (pprint [[x y] [x2 y2]])
+                                             (if (and ;;(not= y2 0)
+                                                  (<= y2 limit)
+                                                  (or (not= x x2)
+                                                      (not= y y2))
+                                                  (= (+ (* x2 x2) (* y2 y2)) ;; c^2
+                                                     (+ (* x x) (* y y) ;; a^2
+                                                        (* (- x2 x) (- x2 x)) (* (- y y2) (- y y2)) ;; b^2
+                                                        )))
+                                               (do
+                                                 ;; (pprint "✓")
+                                                 (pprint [[x y] [x2 y2]])
+                                                 1)
+                                               0))))))))))
+                   (apply concat
+                          (map (fn [x]
+                                 (map (fn [y]
+                                        [x y])
+                                      (range (inc limit))))
+                               (range (inc limit))))))))))

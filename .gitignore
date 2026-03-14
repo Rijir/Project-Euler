@@ -1,3 +1,7 @@
+# Ignore linter and lsp caches
+.lsp/
+.clj-kondo/
+
 # Default leiningen gitignore entries for clojure projects
 /target
 /classes
